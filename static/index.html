@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
   <title>Whiteboard</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -22,8 +23,8 @@
       cursor: crosshair;
       background: #fff;
       margin-top: 10px;
-      /* Let the canvas display at its natural size — no CSS scaling */
       display: block;
+      touch-action: none;  /* tells the browser: don't scroll, we handle touch */
     }
 
     #status {
@@ -65,9 +66,7 @@
   resizeCanvas();
   window.addEventListener('resize', resizeCanvas);
 
-  // WebSocket — connects to whichever port this page was served from
-  const port = window.location.port || 8000;
-  
+  // WebSocket — auto-detects protocol and host so it works locally and on Railway
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
   const host = window.location.host;
   const ws = new WebSocket(`${protocol}//${host}/ws`);
@@ -75,7 +74,7 @@
   ws.onopen = () => {
     statusEl.textContent = 'Connected';
     statusEl.className = 'connected';
-    document.getElementById('node-label').textContent = `Connected to cloud`;
+    document.getElementById('node-label').textContent = 'Connected to cloud';
   };
 
   ws.onclose = () => {
@@ -92,11 +91,12 @@
     }
   };
 
-  // Drawing logic
+  // ── Shared drawing state ──────────────────────────────────────────────────
   let isDrawing = false;
   let lastX = 0;
   let lastY = 0;
 
+  // ── Mouse events (laptop / desktop) ──────────────────────────────────────
   canvas.addEventListener('mousedown', (e) => {
     isDrawing = true;
     const rect = canvas.getBoundingClientRect();
@@ -106,11 +106,40 @@
 
   canvas.addEventListener('mousemove', (e) => {
     if (!isDrawing) return;
-
     const rect = canvas.getBoundingClientRect();
     const currentX = e.clientX - rect.left;
     const currentY = e.clientY - rect.top;
+    sendStroke(currentX, currentY);
+  });
 
+  canvas.addEventListener('mouseup', () => { isDrawing = false; });
+  canvas.addEventListener('mouseleave', () => { isDrawing = false; });
+
+  // ── Touch events (phones and tablets) ────────────────────────────────────
+  canvas.addEventListener('touchstart', (e) => {
+    e.preventDefault();
+    isDrawing = true;
+    const rect = canvas.getBoundingClientRect();
+    const touch = e.touches[0];      // first finger only
+    lastX = touch.clientX - rect.left;
+    lastY = touch.clientY - rect.top;
+  });
+
+  canvas.addEventListener('touchmove', (e) => {
+    e.preventDefault();
+    if (!isDrawing) return;
+    const rect = canvas.getBoundingClientRect();
+    const touch = e.touches[0];
+    const currentX = touch.clientX - rect.left;
+    const currentY = touch.clientY - rect.top;
+    sendStroke(currentX, currentY);
+  });
+
+  canvas.addEventListener('touchend', () => { isDrawing = false; });
+  canvas.addEventListener('touchcancel', () => { isDrawing = false; });
+
+  // ── Shared function used by both mouse and touch ──────────────────────────
+  function sendStroke(currentX, currentY) {
     const strokeData = {
       x0: lastX,
       y0: lastY,
@@ -124,11 +153,9 @@
 
     lastX = currentX;
     lastY = currentY;
-  });
+  }
 
-  canvas.addEventListener('mouseup', () => { isDrawing = false; });
-  canvas.addEventListener('mouseleave', () => { isDrawing = false; });
-
+  // ── Render a stroke received from the server ──────────────────────────────
   function drawStroke(data) {
     ctx.beginPath();
     ctx.moveTo(data.x0, data.y0);
@@ -139,6 +166,7 @@
     ctx.stroke();
   }
 
+  // ── Clear board across all connected clients ──────────────────────────────
   function sendClear() {
     ws.send(JSON.stringify({ type: "clear" }));
   }
