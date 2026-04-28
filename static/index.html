@@ -24,7 +24,7 @@
       background: #fff;
       margin-top: 10px;
       display: block;
-      touch-action: none;  /* tells the browser: don't scroll, we handle touch */
+      touch-action: none;
     }
 
     #status {
@@ -66,30 +66,44 @@
   resizeCanvas();
   window.addEventListener('resize', resizeCanvas);
 
-  // WebSocket — auto-detects protocol and host so it works locally and on Railway
+  // ── WebSocket with auto-reconnect ─────────────────────────────────────────
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
   const host = window.location.host;
-  const ws = new WebSocket(`${protocol}//${host}/ws`);
+  let ws;
 
-  ws.onopen = () => {
-    statusEl.textContent = 'Connected';
-    statusEl.className = 'connected';
-    document.getElementById('node-label').textContent = 'Connected to cloud';
-  };
+  function connectWebSocket() {
+    ws = new WebSocket(`${protocol}//${host}/ws`);
 
-  ws.onclose = () => {
-    statusEl.textContent = 'Disconnected';
-    statusEl.className = 'disconnected';
-  };
+    ws.onopen = () => {
+      statusEl.textContent = 'Connected';
+      statusEl.className = 'connected';
+      document.getElementById('node-label').textContent = 'Connected to cloud';
+    };
 
-  ws.onmessage = (event) => {
-    const data = JSON.parse(event.data);
-    if (data.type === "clear") {
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-    } else {
-      drawStroke(data);
+    ws.onclose = () => {
+      statusEl.textContent = 'Disconnected';
+      statusEl.className = 'disconnected';
+      setTimeout(connectWebSocket, 2000);  // retry after 2 seconds
+    };
+
+    ws.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+      if (data.type === "clear") {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+      } else {
+        drawStroke(data);
+      }
+    };
+  }
+
+  connectWebSocket();
+
+  // ── Safe send — only sends if connection is open ──────────────────────────
+  function safeSend(data) {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify(data));
     }
-  };
+  }
 
   // ── Shared drawing state ──────────────────────────────────────────────────
   let isDrawing = false;
@@ -120,10 +134,10 @@
     e.preventDefault();
     isDrawing = true;
     const rect = canvas.getBoundingClientRect();
-    const touch = e.touches[0];      // first finger only
+    const touch = e.touches[0];
     lastX = touch.clientX - rect.left;
     lastY = touch.clientY - rect.top;
-  });
+  }, { passive: false });
 
   canvas.addEventListener('touchmove', (e) => {
     e.preventDefault();
@@ -133,12 +147,12 @@
     const currentX = touch.clientX - rect.left;
     const currentY = touch.clientY - rect.top;
     sendStroke(currentX, currentY);
-  });
+  }, { passive: false });
 
   canvas.addEventListener('touchend', () => { isDrawing = false; });
   canvas.addEventListener('touchcancel', () => { isDrawing = false; });
 
-  // ── Shared function used by both mouse and touch ──────────────────────────
+  // ── Shared stroke sender ──────────────────────────────────────────────────
   function sendStroke(currentX, currentY) {
     const strokeData = {
       x0: lastX,
@@ -149,7 +163,7 @@
       size: parseInt(sizePicker.value)
     };
 
-    ws.send(JSON.stringify(strokeData));
+    safeSend(strokeData);
 
     lastX = currentX;
     lastY = currentY;
@@ -168,7 +182,7 @@
 
   // ── Clear board across all connected clients ──────────────────────────────
   function sendClear() {
-    ws.send(JSON.stringify({ type: "clear" }));
+    safeSend({ type: "clear" });
   }
 </script>
 </body>
