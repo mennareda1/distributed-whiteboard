@@ -67,12 +67,15 @@
 
   // WebSocket — connects to whichever port this page was served from
   const port = window.location.port || 8000;
-  const ws = new WebSocket(`ws://localhost:${port}/ws`);
+  
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const host = window.location.host;
+  const ws = new WebSocket(`${protocol}//${host}/ws`);
 
   ws.onopen = () => {
     statusEl.textContent = 'Connected';
     statusEl.className = 'connected';
-    document.getElementById('node-label').textContent = `Node :${port}`;
+    document.getElementById('node-label').textContent = `Connected to cloud`;
   };
 
   ws.onclose = () => {
