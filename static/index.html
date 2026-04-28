@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Whiteboard</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #1a1a2e; display: flex; flex-direction: column; align-items: center; overflow: hidden; }
+
+    #toolbar {
+      width: 100%;
+      padding: 10px 20px;
+      background: #16213e;
+      display: flex;
+      gap: 12px;
+      align-items: center;
+    }
+
+    #toolbar label { color: #ccc; font-family: sans-serif; font-size: 14px; }
+
+    #canvas {
+      cursor: crosshair;
+      background: #fff;
+      margin-top: 10px;
+      /* Let the canvas display at its natural size — no CSS scaling */
+      display: block;
+    }
+
+    #status {
+      font-family: sans-serif;
+      font-size: 13px;
+      padding: 6px 14px;
+      border-radius: 20px;
+      margin-left: auto;
+    }
+    .connected { background: #1a4a1a; color: #4caf50; }
+    .disconnected { background: #4a1a1a; color: #f44336; }
+  </style>
+</head>
+<body>
+
+  <div id="toolbar">
+    <label>Color: <input type="color" id="colorPicker" value="#000000"></label>
+    <label>Size: <input type="range" id="sizePicker" min="1" max="30" value="4"></label>
+    <button onclick="sendClear()" style="padding:4px 12px;cursor:pointer;">Clear</button>
+    <span id="node-label" style="color:#aaa;font-family:sans-serif;font-size:13px;"></span>
+    <span id="status" class="disconnected">Disconnected</span>
+  </div>
+
+  <canvas id="canvas"></canvas>
+
+<script>
+  const canvas = document.getElementById('canvas');
+  const ctx = canvas.getContext('2d');
+  const colorPicker = document.getElementById('colorPicker');
+  const sizePicker = document.getElementById('sizePicker');
+  const statusEl = document.getElementById('status');
+
+  // Size the canvas to fill the window minus the toolbar
+  function resizeCanvas() {
+    const toolbar = document.getElementById('toolbar');
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight - toolbar.offsetHeight - 10;
+  }
+  resizeCanvas();
+  window.addEventListener('resize', resizeCanvas);
+
+  // WebSocket — connects to whichever port this page was served from
+  const port = window.location.port || 8000;
+  const ws = new WebSocket(`ws://localhost:${port}/ws`);
+
+  ws.onopen = () => {
+    statusEl.textContent = 'Connected';
+    statusEl.className = 'connected';
+    document.getElementById('node-label').textContent = `Node :${port}`;
+  };
+
+  ws.onclose = () => {
+    statusEl.textContent = 'Disconnected';
+    statusEl.className = 'disconnected';
+  };
+
+  ws.onmessage = (event) => {
+    const data = JSON.parse(event.data);
+    if (data.type === "clear") {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+    } else {
+      drawStroke(data);
+    }
+  };
+
+  // Drawing logic
+  let isDrawing = false;
+  let lastX = 0;
+  let lastY = 0;
+
+  canvas.addEventListener('mousedown', (e) => {
+    isDrawing = true;
+    const rect = canvas.getBoundingClientRect();
+    lastX = e.clientX - rect.left;
+    lastY = e.clientY - rect.top;
+  });
+
+  canvas.addEventListener('mousemove', (e) => {
+    if (!isDrawing) return;
+
+    const rect = canvas.getBoundingClientRect();
+    const currentX = e.clientX - rect.left;
+    const currentY = e.clientY - rect.top;
+
+    const strokeData = {
+      x0: lastX,
+      y0: lastY,
+      x1: currentX,
+      y1: currentY,
+      color: colorPicker.value,
+      size: parseInt(sizePicker.value)
+    };
+
+    ws.send(JSON.stringify(strokeData));
+
+    lastX = currentX;
+    lastY = currentY;
+  });
+
+  canvas.addEventListener('mouseup', () => { isDrawing = false; });
+  canvas.addEventListener('mouseleave', () => { isDrawing = false; });
+
+  function drawStroke(data) {
+    ctx.beginPath();
+    ctx.moveTo(data.x0, data.y0);
+    ctx.lineTo(data.x1, data.y1);
+    ctx.strokeStyle = data.color;
+    ctx.lineWidth = data.size;
+    ctx.lineCap = 'round';
+    ctx.stroke();
+  }
+
+  function sendClear() {
+    ws.send(JSON.stringify({ type: "clear" }));
+  }
+</script>
+</body>
+</html>

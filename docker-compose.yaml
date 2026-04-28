@@ -1,0 +1,45 @@
+services:
+
+  # Redis — the shared backbone all nodes talk through
+  redis:
+    image: redis:7-alpine        # official Redis image, alpine = small
+    ports:
+      - "6379:6379"              # expose Redis so you can still use redis-cli locally
+    healthcheck:                 # Docker will wait for Redis to be ready
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # FastAPI Node 1
+  node1:
+    build: .                     # build using our Dockerfile in this folder
+    ports:
+      - "8000:8000"              # laptop:8000 → container:8000
+    environment:
+      - REDIS_URL=redis://redis:6379   # "redis" is the hostname — Docker resolves it
+    depends_on:
+      redis:
+        condition: service_healthy     # don't start until Redis is ready
+
+  # FastAPI Node 2
+  node2:
+    build: .
+    ports:
+      - "8001:8000"              # laptop:8001 → container:8000
+    environment:
+      - REDIS_URL=redis://redis:6379
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  # FastAPI Node 3
+  node3:
+    build: .
+    ports:
+      - "8002:8000"              # laptop:8002 → container:8000
+    environment:
+      - REDIS_URL=redis://redis:6379
+    depends_on:
+      redis:
+        condition: service_healthy
