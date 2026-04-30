@@ -27,6 +27,7 @@
       display: flex;
       flex-direction: column;
       height: 100vh;
+      height: 100dvh; /* dynamic viewport height — fixes mobile browser bar issues */
       overflow: hidden;
       font-family: 'Segoe UI', system-ui, sans-serif;
     }
@@ -41,7 +42,12 @@
       border-bottom: 1px solid var(--border);
       flex-shrink: 0;
       z-index: 10;
+      overflow-x: auto;        /* toolbar scrolls horizontally on small screens */
+      overflow-y: hidden;
+      -webkit-overflow-scrolling: touch;
+      scrollbar-width: none;   /* hide scrollbar but keep scroll */
     }
+    #toolbar::-webkit-scrollbar { display: none; }
 
     #logo {
       display: flex;
@@ -67,6 +73,7 @@
       border: 1px solid var(--border);
       border-radius: 10px;
       padding: 4px;
+      flex-shrink: 0;
     }
 
     .tool-btn {
@@ -79,6 +86,7 @@
       font-size: 16px;
       transition: all 0.15s;
       position: relative;
+      flex-shrink: 0;
     }
     .tool-btn:hover { background: var(--border); color: var(--text); }
     .tool-btn.active {
@@ -116,6 +124,7 @@
       cursor: pointer;
       background: none;
       overflow: hidden;
+      flex-shrink: 0;
     }
     #colorPicker::-webkit-color-swatch-wrapper { padding: 0; }
     #colorPicker::-webkit-color-swatch { border: none; border-radius: 50%; }
@@ -128,6 +137,7 @@
       border: 1px solid var(--border);
       border-radius: 10px;
       padding: 4px 10px;
+      flex-shrink: 0;
     }
     .slider-wrap label { font-size: 10px; color: var(--muted); white-space: nowrap; }
     .slider-wrap input[type=range] {
@@ -145,6 +155,7 @@
       border: 1px solid var(--accent3);
       border-radius: 10px;
       padding: 4px;
+      flex-shrink: 0;
     }
     #shape-picker.visible { display: flex; }
     .shape-btn {
@@ -165,6 +176,7 @@
       display: flex;
       align-items: center;
       gap: 6px;
+      flex-shrink: 0;
     }
 
     .action-btn {
@@ -177,6 +189,7 @@
       font-size: 12px;
       cursor: pointer;
       transition: all 0.15s;
+      white-space: nowrap;
     }
     .action-btn:hover { border-color: var(--accent); color: var(--accent); }
     .action-btn.danger:hover { border-color: #FF4444; color: #FF4444; }
@@ -189,6 +202,7 @@
       font-weight: 600;
       background: var(--panel);
       border: 1px solid var(--border);
+      white-space: nowrap;
     }
     #status .dot {
       width: 7px; height: 7px;
@@ -199,11 +213,13 @@
     #status.connected { color: var(--text); }
     #status.disconnected { color: var(--muted); }
 
+    /* ── Canvas area ── */
     #canvas-wrap {
       flex: 1;
       position: relative;
-      overflow: hidden;
+      overflow: hidden;       /* canvas fills exact space, no scroll needed */
       background: #FFFFFF;
+      touch-action: none;     /* moved here from canvas element — more reliable */
     }
 
     #canvas-wrap::before {
@@ -217,7 +233,7 @@
 
     #canvas {
       position: absolute; inset: 0;
-      touch-action: none;
+      /* touch-action removed here — handled by parent */
       cursor: crosshair;
       z-index: 1;
     }
@@ -283,7 +299,6 @@
 <body>
 
 <div id="toolbar">
-
   <div id="logo">
     <svg width="38" height="38" viewBox="0 0 38 38" fill="none" xmlns="http://www.w3.org/2000/svg">
       <rect x="2" y="3" width="34" height="26" rx="3.5" fill="#FFFFFF" stroke="#4ECDC4" stroke-width="1.8"/>
@@ -359,7 +374,6 @@
       <span id="status-text">Connecting…</span>
     </div>
   </div>
-
 </div>
 
 <div id="canvas-wrap">
@@ -392,6 +406,9 @@ function resizeCanvas() {
   replayHistory();
 }
 window.addEventListener('resize', resizeCanvas);
+
+// Also handle mobile address bar show/hide
+window.addEventListener('orientationchange', () => setTimeout(resizeCanvas, 300));
 
 let currentTool  = 'pen';
 let currentShape = 'rect';
@@ -586,6 +603,7 @@ function getPos(e) {
   return { x: e.clientX - rect.left, y: e.clientY - rect.top };
 }
 
+// ── Mouse events ──────────────────────────────────────────────────────────────
 canvas.addEventListener('mousedown', (e) => {
   const {x, y} = getPos(e);
   if (currentTool === 'text') { openTextInput(x, y); return; }
@@ -618,24 +636,33 @@ canvas.addEventListener('mouseup', (e) => {
 
 canvas.addEventListener('mouseleave', () => { isDrawing = false; });
 
+// ── Touch events ──────────────────────────────────────────────────────────────
 function getTouchPos(e) {
   const rect = canvas.getBoundingClientRect();
   const t = e.touches[0];
   return { x: t.clientX - rect.left, y: t.clientY - rect.top };
 }
 
+// touchstart: always begin drawing, always prevent default to stop
+// the browser claiming the touch for scroll/zoom on the canvas
 canvas.addEventListener('touchstart', (e) => {
   e.preventDefault();
-  const {x, y} = getTouchPos(e);
-  if (currentTool === 'text') { openTextInput(x, y); return; }
   isDrawing = true;
-  startX = lastX = x; startY = lastY = y;
+  const {x, y} = getTouchPos(e);
+  if (currentTool === 'text') {
+    isDrawing = false;
+    openTextInput(x, y);
+    return;
+  }
+  startX = lastX = x;
+  startY = lastY = y;
   strokeId = newStrokeId();
 }, { passive: false });
 
+// touchmove: only block scroll WHILE actively drawing on the canvas
 canvas.addEventListener('touchmove', (e) => {
-  e.preventDefault();
-  if (!isDrawing) return;
+  if (!isDrawing) return;   // not drawing — allow natural scroll
+  e.preventDefault();        // drawing — block scroll so the stroke tracks finger
   const {x, y} = getTouchPos(e);
   if (currentTool === 'shapes') { drawShapePreview(startX, startY, x, y); return; }
   safeSend({ type:'stroke', strokeId, userId, x0:lastX, y0:lastY, x1:x, y1:y, ...settings() });
@@ -656,6 +683,9 @@ canvas.addEventListener('touchend', (e) => {
   strokeId = null;
 });
 
+canvas.addEventListener('touchcancel', () => { isDrawing = false; strokeId = null; });
+
+// ── Text tool ──────────────────────────────────────────────────────────────────
 let textX = 0, textY = 0;
 function openTextInput(x, y) {
   textX = x; textY = y;
@@ -679,6 +709,7 @@ function commitText() {
   safeSend({ type:'text', strokeId:newStrokeId(), userId, text, x:textX, y:textY, ...settings() });
 }
 
+// ── Undo & Clear ───────────────────────────────────────────────────────────────
 function undoLast() {
   let targetStrokeId = null;
   for (let i = localHistory.length - 1; i >= 0; i--) {
@@ -705,6 +736,7 @@ document.addEventListener('keydown', (e) => {
   if ((e.ctrlKey || e.metaKey) && e.key === 'z') { e.preventDefault(); undoLast(); }
 });
 
+// ── Remote cursors ─────────────────────────────────────────────────────────────
 function showRemoteCursor(data) {
   if (data.userId === userId) return;
   let el = remoteCursors[data.userId]?.el;
@@ -725,6 +757,7 @@ function showRemoteCursor(data) {
   }, 3000);
 }
 
+// ── Toast ──────────────────────────────────────────────────────────────────────
 let toastTimer;
 function showToast(msg) {
   const el = document.getElementById('toast');
@@ -734,6 +767,7 @@ function showToast(msg) {
   toastTimer = setTimeout(() => el.classList.remove('show'), 2000);
 }
 
+// ── Init ───────────────────────────────────────────────────────────────────────
 resizeCanvas();
 </script>
 </body>
