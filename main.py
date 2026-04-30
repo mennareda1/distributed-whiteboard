@@ -7,67 +7,55 @@ from fastapi.staticfiles import StaticFiles
 
 app = FastAPI()
 
-# The key names we'll use inside Redis
-REDIS_CHANNEL = "whiteboard"      # pub/sub channel name
-REDIS_HISTORY = "stroke_history"  # list name for saving strokes
-MAX_HISTORY   = 5000              # max strokes to remember
+REDIS_CHANNEL = "whiteboard"
+REDIS_HISTORY = "stroke_history"
+MAX_HISTORY   = 5000
 
-# Browsers connected to THIS specific server instance
 local_clients: list[WebSocket] = []
 
-# ── Redis connection ─────────────────────────────────────────────────────────
 async def get_redis():
     url = os.environ.get("REDIS_URL", "redis://localhost:6379")
     return await aioredis.from_url(url)
 
 # ── Send full history to a newly joined browser ──────────────────────────────
 async def send_history(websocket: WebSocket):
-    """When a browser first connects, replay all saved strokes so they
-    see the current board state instead of a blank canvas."""
     r = await get_redis()
     strokes = await r.lrange(REDIS_HISTORY, 0, -1)
     await r.aclose()
     for stroke in strokes:
         await websocket.send_text(stroke.decode())
 
-# ── Background task: listen to Redis and forward to local browsers ────────────
+# ── Redis listener ────────────────────────────────────────────────────────────
 async def redis_listener():
-    """Polls Redis for new pub/sub messages every 10ms and forwards
-    them to all browsers connected to this server instance.
-    Retries automatically if Redis connection drops."""
-    while True:                          # outer loop — reconnect if Redis drops
+    while True:
         try:
             r = await get_redis()
             pubsub = r.pubsub()
             await pubsub.subscribe(REDIS_CHANNEL)
             print("Redis listener connected and subscribed.")
 
-            while True:                  # inner loop — keep reading messages
+            while True:
                 message = await pubsub.get_message(
                     ignore_subscribe_messages=True,
                     timeout=1.0
                 )
-
                 if message is not None:
                     data = message["data"].decode()
-
                     dead_clients = []
                     for client in local_clients:
                         try:
                             await client.send_text(data)
                         except Exception:
                             dead_clients.append(client)
-
                     for dead in dead_clients:
                         local_clients.remove(dead)
 
-                await asyncio.sleep(0.01)  # 10ms pause — fast but not CPU-hungry
+                await asyncio.sleep(0.01)
 
         except Exception as e:
             print(f"Redis listener error: {e}. Retrying in 2 seconds...")
             await asyncio.sleep(2)
 
-# ── Start the background listener when the server boots ──────────────────────
 @app.on_event("startup")
 async def startup():
     asyncio.create_task(redis_listener())
@@ -79,7 +67,6 @@ async def websocket_endpoint(websocket: WebSocket):
     local_clients.append(websocket)
     print(f"Client connected. Local clients: {len(local_clients)}")
 
-    # Replay full drawing history so new browser sees the current board
     await send_history(websocket)
 
     r = await get_redis()
@@ -88,17 +75,51 @@ async def websocket_endpoint(websocket: WebSocket):
         while True:
             data = await websocket.receive_text()
             parsed = json.loads(data)
+            event_type = parsed.get("type")
 
-            if parsed.get("type") == "clear":
-                # Wipe Redis history so new joiners also get a blank board
+            # ── Clear all ────────────────────────────────────────────────────
+            if event_type == "clear":
                 await r.delete(REDIS_HISTORY)
+                await r.publish(REDIS_CHANNEL, data)
+
+            # ── Per-user undo ────────────────────────────────────────────────
+            elif event_type == "undo":
+                # userId sent by the browser — remove their last stroke from Redis
+                user_id = parsed.get("userId")
+                if user_id:
+                    # Scan history from end to find last stroke by this user
+                    strokes = await r.lrange(REDIS_HISTORY, 0, -1)
+                    target_index = None
+                    for i in range(len(strokes) - 1, -1, -1):
+                        try:
+                            s = json.loads(strokes[i].decode())
+                            # Match by userId — skip cursor/clear/undo events
+                            if s.get("userId") == user_id and s.get("type") not in ("clear", "undo", "cursor"):
+                                target_index = i
+                                break
+                        except Exception:
+                            continue
+
+                    if target_index is not None:
+                        # Redis has no delete-by-index — use a tombstone trick:
+                        # replace the entry with a null marker then clean the list
+                        await r.lset(REDIS_HISTORY, target_index, b"__deleted__")
+                        # Remove all tombstones
+                        await r.lrem(REDIS_HISTORY, 0, b"__deleted__")
+
+                    # Broadcast a full redraw signal — all clients will replay history
+                    redraw_event = json.dumps({"type": "redraw"})
+                    await r.publish(REDIS_CHANNEL, redraw_event)
+
+            # ── Cursor movement (laser pointer — not saved to history) ────────
+            elif event_type == "cursor":
+                await r.publish(REDIS_CHANNEL, data)
+
+            # ── Regular drawing events (strokes, shapes, text) ───────────────
             else:
-                # Save stroke to history
                 await r.rpush(REDIS_HISTORY, data)
                 await r.ltrim(REDIS_HISTORY, -MAX_HISTORY, -1)
-
-            # Always publish — redis_listener delivers it to all browsers
-            await r.publish(REDIS_CHANNEL, data)
+                await r.publish(REDIS_CHANNEL, data)
 
     except WebSocketDisconnect:
         local_clients.remove(websocket)
