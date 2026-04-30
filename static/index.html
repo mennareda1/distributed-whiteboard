@@ -27,7 +27,7 @@
       display: flex;
       flex-direction: column;
       height: 100vh;
-      overflow: hidden;
+      overflow: auto;
       font-family: 'Segoe UI', system-ui, sans-serif;
     }
 
@@ -202,7 +202,7 @@
     #canvas-wrap {
       flex: 1;
       position: relative;
-      overflow: hidden;
+      overflow: auto;
       background: #FFFFFF;
     }
 
@@ -385,7 +385,7 @@ const userColor = '#' + Math.floor(Math.random()*0xFFFFFF).toString(16).padStart
 function resizeCanvas() {
   const dpr = window.devicePixelRatio || 1;
   canvas.width  = wrap.offsetWidth  * dpr;
-  canvas.height = wrap.offsetHeight * dpr;
+  canvas.height = wrap.offsetHeight * 2;
   canvas.style.width  = wrap.offsetWidth  + 'px';
   canvas.style.height = wrap.offsetHeight + 'px';
   ctx.scale(dpr, dpr);
