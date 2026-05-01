@@ -360,10 +360,21 @@ connect();
 function send(o) { if(ws&&ws.readyState===WebSocket.OPEN) ws.send(JSON.stringify(o)); }
 
 function onEvent(d) {
-  if(d.type==='clear')  { history=[]; localIds.clear(); ctx.clearRect(0,0,CANVAS_W,CANVAS_H); updateMM(); return; }
-  if(d.type==='redraw') { replay(); return; }
+  if(d.type==='clear') {
+    history=[]; localIds.clear();
+    ctx.clearRect(0,0,CANVAS_W,CANVAS_H); updateMM(); return;
+  }
+  if(d.type==='redraw') {
+    // Server sends authoritative history with every redraw (after undo)
+    // Replace local history and repaint from scratch
+    if(d.history) {
+      history = d.history;
+      localIds.clear();  // reset so replayed strokes aren't skipped
+    }
+    replay(); return;
+  }
   if(d.type==='cursor') { showCursor(d); return; }
-  // Always add to history for replay/undo
+  // Regular drawing event — add to history
   history.push(d);
   // Skip rendering if WE already drew this stroke locally (optimistic render)
   const id = d.sid || d.strokeId;
@@ -534,12 +545,23 @@ function commitTI() { const t=ti.value.trim(); ti.style.display='none'; if(!t) r
 
 // UNDO / CLEAR
 function undoLast() {
+  // Find last stroke by this user in local history
   let tid=null;
-  for(let i=history.length-1;i>=0;i--){ if(history[i].userId===userId){ tid=history[i].sid||history[i].strokeId; break; } }
+  for(let i=history.length-1;i>=0;i--) {
+    const e=history[i];
+    if(e.userId===userId && e.type!=='cursor' && e.type!=='clear') {
+      tid = e.sid || e.strokeId;
+      break;
+    }
+  }
   if(!tid){ toast('Nothing to undo'); return; }
+  // Remove locally immediately (optimistic)
   history=history.filter(e=>(e.sid||e.strokeId)!==tid);
   localIds.delete(tid);
-  replay(); send({type:'undo',userId,strokeId:tid}); toast('Undone ↩');
+  replay();
+  // Tell server — it will remove from Redis and broadcast authoritative history
+  send({type:'undo', userId, strokeId:tid});
+  toast('Undone ↩');
 }
 
 function clearAll() {
