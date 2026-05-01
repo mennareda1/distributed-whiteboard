@@ -112,9 +112,13 @@
     #vp {
       position:fixed; top:52px; left:0; right:0; bottom:0;
       overflow:hidden; cursor:crosshair;
-      background-color: #FFFFFF;
-      background-image: radial-gradient(circle, rgba(148,163,184,0.45) 1px, transparent 1px);
-      background-size: 28px 28px;
+      background: #E8ECF0;  /* neutral grey outside canvas */
+    }
+    /* The dot grid sits between the grey bg and the drawing canvas */
+    #dot-grid {
+      position:absolute; top:0; left:0;
+      transform-origin:0 0;  /* moves with canvas via JS */
+      z-index:0; pointer-events:none;
     }
     #canvas { position:absolute; top:0; left:0; z-index:1; transform-origin:0 0; background:transparent; }
 
@@ -223,6 +227,7 @@
 </div>
 
 <div id="vp">
+  <div id="dot-grid" style="width:6000px;height:4500px;background-image:radial-gradient(circle, rgba(148,163,184,0.55) 1px, transparent 1px);background-size:28px 28px;"></div>
   <canvas id="canvas"></canvas>
   <input type="text" id="text-input" placeholder="Type here…">
 </div>
@@ -259,12 +264,9 @@ function initVP() {
 function applyT() {
   canvas.style.transform = `translate(${panX}px,${panY}px) scale(${zoom})`;
   document.getElementById('zoom-level').textContent = Math.round(zoom*100)+'%';
-  // Move dot grid with viewport so it tiles correctly
-  const gs = 28 * zoom;
-  const ox = ((panX % gs) + gs) % gs;
-  const oy = ((panY % gs) + gs) % gs;
-  vp.style.backgroundSize = `${gs}px ${gs}px`;
-  vp.style.backgroundPosition = `${ox}px ${oy}px`;
+  // Move dot-grid overlay with canvas transform
+  const dg = document.getElementById('dot-grid');
+  if(dg) dg.style.transform = `translate(${panX}px,${panY}px) scale(${zoom})`;
   updateMM();
 }
 
@@ -349,7 +351,7 @@ const proto = location.protocol==='https:'?'wss:':'ws:';
 let ws;
 function connect() {
   ws=new WebSocket(`${proto}//${location.host}/ws`);
-  ws.onopen=()=>{ const e=document.getElementById('status'); e.className='connected'; document.getElementById('status-text').textContent='Live'; };
+  ws.onopen=()=>{ const e=document.getElementById('status'); e.className='connected'; document.getElementById('status-text').textContent='Live'; localIds.clear(); history=[]; };
   ws.onclose=()=>{ const e=document.getElementById('status'); e.className='disconnected'; document.getElementById('status-text').textContent='Off'; setTimeout(connect,2000); };
   ws.onmessage=e=>onEvent(JSON.parse(e.data));
 }
@@ -561,8 +563,14 @@ function showCursor(d) {
   info.t=setTimeout(()=>{ info.el.remove(); delete cursors[d.userId]; },3000);
 }
 
-// MINIMAP
+// MINIMAP — throttled to avoid killing mobile performance
+let mmPending = false;
 function updateMM() {
+  if(mmPending) return;
+  mmPending = true;
+  requestAnimationFrame(() => { mmPending = false; _updateMM(); });
+}
+function _updateMM() {
   mmctx.fillStyle='#1A2438'; mmctx.fillRect(0,0,120,80);
   mmctx.drawImage(canvas,0,0,120,80);
   const vw=vp.offsetWidth, vh=vp.offsetHeight;
