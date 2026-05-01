@@ -108,14 +108,13 @@
     #status.connected .dot { background:#4ECDC4; box-shadow:0 0 5px #4ECDC4; }
     #status.disconnected { color:var(--muted); }
 
+    /* Viewport */
     #vp {
       position:fixed; top:52px; left:0; right:0; bottom:0;
-      overflow:hidden; background:#F8F8F8; cursor:crosshair;
-    }
-    #vp::before {
-      content:''; position:absolute; inset:0; z-index:0; pointer-events:none;
-      background-image:radial-gradient(circle, rgba(0,0,0,0.09) 1px, transparent 1px);
-      background-size:28px 28px;
+      overflow:hidden; cursor:crosshair;
+      background-color: #FFFFFF;
+      background-image: radial-gradient(circle, rgba(100,116,139,0.30) 1.5px, transparent 1.5px);
+      background-size: 28px 28px;
     }
     #canvas { position:absolute; top:0; left:0; z-index:1; transform-origin:0 0; background:#fff; }
 
@@ -248,7 +247,8 @@ canvas.width = CANVAS_W; canvas.height = CANVAS_H;
 canvas.style.width = CANVAS_W + 'px'; canvas.style.height = CANVAS_H + 'px';
 mmc.width = 120; mmc.height = 80;
 
-let panX = 0, panY = 0, zoom = 1.0;
+// Viewport
+let panX = 0, panY = 0, zoom = 0.35;
 
 function initVP() {
   panX = (vp.offsetWidth  - CANVAS_W * zoom) / 2;
@@ -259,6 +259,12 @@ function initVP() {
 function applyT() {
   canvas.style.transform = `translate(${panX}px,${panY}px) scale(${zoom})`;
   document.getElementById('zoom-level').textContent = Math.round(zoom*100)+'%';
+  // Move dot grid with viewport so it tiles correctly
+  const gs = 28 * zoom;
+  const ox = ((panX % gs) + gs) % gs;
+  const oy = ((panY % gs) + gs) % gs;
+  vp.style.backgroundSize = `${gs}px ${gs}px`;
+  vp.style.backgroundPosition = `${ox}px ${oy}px`;
   updateMM();
 }
 
@@ -266,14 +272,18 @@ function toCanvas(vx, vy) {
   return { x:(vx-panX)/zoom, y:(vy-panY)/zoom };
 }
 
+// User ID
 let userId = localStorage.getItem('wb_uid');
 if (!userId) { userId='user_'+Math.random().toString(36).slice(2,9); localStorage.setItem('wb_uid',userId); }
 const userColor = '#'+Math.floor(Math.random()*0xFFFFFF).toString(16).padStart(6,'0');
 
+// State
 let tool='pen', shape='rect', drawing=false, panning=false;
-let sx=0,sy=0,lx=0,ly=0,pid0x=0,pid0y=0,ppx=0,ppy=0;
+let sx=0,sy=0,lx=0,ly=0, pid=0,pid0x=0,pid0y=0,ppx=0,ppy=0;
 let sid=null, history=[], cursors={}, ptDist=null;
+const localIds = new Set(); // strokeIds drawn locally — skip echo
 
+// Tools
 document.querySelectorAll('.tb[data-tool]').forEach(b => b.addEventListener('click', () => {
   const t = b.dataset.tool;
   if (t==='shapes') {
@@ -334,6 +344,7 @@ function activateTool(t) {
   tool=t; setCursor();
 }
 
+// WebSocket
 const proto = location.protocol==='https:'?'wss:':'ws:';
 let ws;
 function connect() {
@@ -347,10 +358,15 @@ connect();
 function send(o) { if(ws&&ws.readyState===WebSocket.OPEN) ws.send(JSON.stringify(o)); }
 
 function onEvent(d) {
-  if(d.type==='clear')  { history=[]; ctx.clearRect(0,0,CANVAS_W,CANVAS_H); updateMM(); return; }
+  if(d.type==='clear')  { history=[]; localIds.clear(); ctx.clearRect(0,0,CANVAS_W,CANVAS_H); updateMM(); return; }
   if(d.type==='redraw') { replay(); return; }
   if(d.type==='cursor') { showCursor(d); return; }
-  history.push(d); render(d); updateMM();
+  // Always add to history for replay/undo
+  history.push(d);
+  // Skip rendering if WE already drew this stroke locally (optimistic render)
+  const id = d.sid || d.strokeId;
+  if(id && localIds.has(id)) { updateMM(); return; }
+  render(d); updateMM();
 }
 
 function replay() {
@@ -407,9 +423,11 @@ function txt(d) { ctx.globalAlpha=d.opacity||1; ctx.fillStyle=d.color; ctx.font=
 
 function preview(x0,y0,x1,y1) { replay(); const s=cfg(); applyC(s); shp({...s,shape,x0,y0,x1,y1}); }
 
+// VP pos helpers
 function vpPos(e) { const r=vp.getBoundingClientRect(); return {vx:e.clientX-r.left,vy:e.clientY-r.top}; }
 function tpPos(t) { const r=vp.getBoundingClientRect(); return {vx:t.clientX-r.left,vy:t.clientY-r.top}; }
 
+// MOUSE
 vp.addEventListener('mousedown',e=>{
   const {vx,vy}=vpPos(e); const {x,y}=toCanvas(vx,vy);
   if(tool==='pan'){ panning=true; pid0x=vx; pid0y=vy; ppx=panX; ppy=panY; vp.style.cursor='grabbing'; return; }
@@ -423,7 +441,10 @@ vp.addEventListener('mousemove',e=>{
   if(Math.random()<0.25) send({type:'cursor',userId,color:userColor,x,y});
   if(!drawing) return;
   if(tool==='shapes'){ preview(sx,sy,x,y); return; }
-  send({type:'stroke',sid,userId,x0:lx,y0:ly,x1:x,y1:y,...cfg()});
+  const sd = {type:'stroke',sid,userId,x0:lx,y0:ly,x1:x,y1:y,...cfg()};
+  localIds.add(sid);  // mark as locally rendered
+  seg(sd);            // draw immediately — no waiting for server
+  send(sd);
   lx=x; ly=y;
 });
 
@@ -443,6 +464,7 @@ vp.addEventListener('wheel',e=>{
   adjZoom(e.deltaY<0?0.1:-0.1,vx,vy);
 },{passive:false});
 
+// TOUCH
 vp.addEventListener('touchstart',e=>{
   e.preventDefault();
   if(e.touches.length===2){
@@ -476,7 +498,10 @@ vp.addEventListener('touchmove',e=>{
   if(panning){ panX=ppx+(vx-pid0x); panY=ppy+(vy-pid0y); applyT(); return; }
   if(!drawing) return;
   if(tool==='shapes'){ preview(sx,sy,x,y); return; }
-  send({type:'stroke',sid,userId,x0:lx,y0:ly,x1:x,y1:y,...cfg()});
+  const sd2 = {type:'stroke',sid,userId,x0:lx,y0:ly,x1:x,y1:y,...cfg()};
+  localIds.add(sid);
+  seg(sd2);
+  send(sd2);
   lx=x; ly=y;
 },{passive:false});
 
@@ -493,6 +518,7 @@ vp.addEventListener('touchend',e=>{
 
 vp.addEventListener('touchcancel',()=>{ drawing=false; panning=false; ptDist=null; },{passive:false});
 
+// TEXT
 let tcx=0,tcy=0;
 function openTI(vx,vy,x,y) {
   tcx=x; tcy=y;
@@ -504,11 +530,13 @@ ti.addEventListener('keydown',e=>{ if(e.key==='Enter'&&!e.shiftKey){e.preventDef
 ti.addEventListener('blur',commitTI);
 function commitTI() { const t=ti.value.trim(); ti.style.display='none'; if(!t) return; send({type:'text',sid:newSid(),userId,text:t,x:tcx,y:tcy,...cfg()}); }
 
+// UNDO / CLEAR
 function undoLast() {
   let tid=null;
   for(let i=history.length-1;i>=0;i--){ if(history[i].userId===userId){ tid=history[i].sid||history[i].strokeId; break; } }
   if(!tid){ toast('Nothing to undo'); return; }
   history=history.filter(e=>(e.sid||e.strokeId)!==tid);
+  localIds.delete(tid);
   replay(); send({type:'undo',userId,strokeId:tid}); toast('Undone ↩');
 }
 
@@ -518,6 +546,7 @@ function clearAll() {
   send({type:'clear'});
 }
 
+// CURSORS
 function showCursor(d) {
   if(d.userId===userId) return;
   let info=cursors[d.userId];
@@ -532,6 +561,7 @@ function showCursor(d) {
   info.t=setTimeout(()=>{ info.el.remove(); delete cursors[d.userId]; },3000);
 }
 
+// MINIMAP
 function updateMM() {
   mmctx.fillStyle='#1A2438'; mmctx.fillRect(0,0,120,80);
   mmctx.drawImage(canvas,0,0,120,80);
@@ -551,6 +581,7 @@ document.getElementById('minimap').addEventListener('click',e=>{
   panX=vp.offsetWidth/2-cx*zoom; panY=vp.offsetHeight/2-cy*zoom; applyT();
 });
 
+// TOAST
 let tt;
 function toast(m) {
   const e=document.getElementById('toast'); e.textContent=m; e.classList.add('show');
