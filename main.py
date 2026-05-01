@@ -84,32 +84,36 @@ async def websocket_endpoint(websocket: WebSocket):
 
             # ── Per-user undo ────────────────────────────────────────────────
             elif event_type == "undo":
-                # userId sent by the browser — remove their last stroke from Redis
-                user_id = parsed.get("userId")
-                if user_id:
-                    # Scan history from end to find last stroke by this user
+                stroke_id = parsed.get("strokeId")
+                if stroke_id:
+                    # Find ALL segments belonging to this strokeId and remove them
                     strokes = await r.lrange(REDIS_HISTORY, 0, -1)
-                    target_index = None
-                    for i in range(len(strokes) - 1, -1, -1):
+                    # Mark every entry with matching strokeId or sid as deleted
+                    for i, raw in enumerate(strokes):
                         try:
-                            s = json.loads(strokes[i].decode())
-                            # Match by userId — skip cursor/clear/undo events
-                            if s.get("userId") == user_id and s.get("type") not in ("clear", "undo", "cursor"):
-                                target_index = i
-                                break
+                            s = json.loads(raw.decode())
+                            sid = s.get("sid") or s.get("strokeId")
+                            if sid == stroke_id:
+                                await r.lset(REDIS_HISTORY, i, b"__deleted__")
                         except Exception:
                             continue
+                    await r.lrem(REDIS_HISTORY, 0, b"__deleted__")
 
-                    if target_index is not None:
-                        # Redis has no delete-by-index — use a tombstone trick:
-                        # replace the entry with a null marker then clean the list
-                        await r.lset(REDIS_HISTORY, target_index, b"__deleted__")
-                        # Remove all tombstones
-                        await r.lrem(REDIS_HISTORY, 0, b"__deleted__")
+                # Fetch the cleaned history and send it inline with redraw
+                # so every client gets the authoritative state without reconnecting
+                cleaned = await r.lrange(REDIS_HISTORY, 0, -1)
+                history_items = []
+                for raw in cleaned:
+                    try:
+                        history_items.append(json.loads(raw.decode()))
+                    except Exception:
+                        continue
 
-                    # Broadcast a full redraw signal — all clients will replay history
-                    redraw_event = json.dumps({"type": "redraw"})
-                    await r.publish(REDIS_CHANNEL, redraw_event)
+                redraw_event = json.dumps({
+                    "type": "redraw",
+                    "history": history_items
+                })
+                await r.publish(REDIS_CHANNEL, redraw_event)
 
             # ── Cursor movement (laser pointer — not saved to history) ────────
             elif event_type == "cursor":
